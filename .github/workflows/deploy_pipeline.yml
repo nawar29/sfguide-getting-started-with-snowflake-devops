@@ -13,9 +13,12 @@ jobs:
       REPO_NAME: "quickstart_common.public.quickstart_repo"
       # Native username/password auth
       SNOWFLAKE_AUTHENTICATOR: "snowflake"
-      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-      SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
-      SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+  #    SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_ACCOUNT: 'qrvorji-kgb24875'
+ #     SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_USER: 'nawar29'
+#      SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+      SNOWFLAKE_PASSWORD: 'Pass29n!bc3b!!'
 
     steps:
       - name: Checkout repository
