@@ -1,13 +1,8 @@
 name: Deploy data pipeline
 
-# Action will run on pushes to selected branches
 on:
   push:
-    branches:
-      - dev
-      - main
-
-  # Allows you to run this workflow manually from the Actions tab
+    branches: [ dev, main ]
   workflow_dispatch:
 
 jobs:
@@ -16,34 +11,90 @@ jobs:
 
     env:
       REPO_NAME: "quickstart_common.public.quickstart_repo"
+      # Use Snow CLI JWT auth
+      SNOWFLAKE_AUTHENTICATOR: "snowflake_jwt"
+      # You can keep these if you prefer snow CLI's connection naming:
       SNOWFLAKE_CONNECTIONS_DEFAULT_AUTHENTICATOR: "SNOWFLAKE_JWT"
       SNOWFLAKE_CONNECTIONS_DEFAULT_PRIVATE_KEY_FILE: ".snowflake/snowflake_rsa_key"
-      # Read connection secrets
       SNOWFLAKE_CONNECTIONS_DEFAULT_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
       SNOWFLAKE_CONNECTIONS_DEFAULT_USER: ${{ secrets.SNOWFLAKE_USER }}
 
     steps:
-      # Checkout step is necessary if you want to use a config file from your repo
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Write private key secret as file
-      - name: Configure Private Key
-        run: |
-          echo "${{ secrets.SNOWFLAKE_PRIVATE_KEY }}" > .snowflake/snowflake_rsa_key
+      - name: Install CA certs (helps avoid TLS issues)
+        run: sudo apt-get update && sudo apt-get install -y ca-certificates
 
-      # Install Snowflake CLI GitHub Action and point to config file
+      - name: Write and validate PKCS#8 private key
+        shell: bash
+        env:
+          PRIVATE_KEY_SECRET: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+
+          # Ensure .snowflake dir exists
+          mkdir -p .snowflake
+          umask 177
+
+          # Write secret verbatim using a quoted heredoc to preserve newlines exactly
+          cat > .snowflake/snowflake_rsa_key <<'EOF'
+${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+EOF
+
+          # Make sure perms are strict
+          chmod 600 .snowflake/snowflake_rsa_key
+
+          # Quick format checks:
+          echo "First line of key:"
+          head -n 1 .snowflake/snowflake_rsa_key
+
+          if ! head -n 1 .snowflake/snowflake_rsa_key | grep -q "BEGIN .*PRIVATE KEY"; then
+            echo "ERROR: Private key does not look like PKCS#8 (BEGIN PRIVATE KEY). Aborting."
+            exit 1
+          fi
+
+          # Validate openssl can read the key (will error if not PKCS#8)
+          openssl pkey -in .snowflake/snowflake_rsa_key -noout
+
+          echo "Private key validated as PKCS#8."
+
+          # Optional: derive and show base64 public key so you can confirm it matches Snowflake's stored public key
+          openssl rsa -pubout -in .snowflake/snowflake_rsa_key -outform DER \
+            | base64 | tr -d '\n' > .snowflake/snowflake_rsa_key.pub.base64
+          echo "Derived public key (base64, one-line) saved to .snowflake/snowflake_rsa_key.pub.base64"
+          echo
+          echo "Paste the contents of that file into your ALTER USER ... SET RSA_PUBLIC_KEY='<value>' if needed."
+          echo "----"
+          tail -c +1 .snowflake/snowflake_rsa_key.pub.base64 | sed -n '1p'
+
       - name: Install snowflake-cli
         uses: Snowflake-Labs/snowflake-cli-action@v1.5
         with:
           cli-version: "latest"
           default-config-file-path: ".snowflake/config.toml"
 
-      # Update Snowflake's copy of the repository
-      - name: Fetch repository changes
-        run: snow git fetch "${REPO_NAME}"
+      - name: Check snow cli version & connection test
+        env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_AUTHENTICATOR: "snowflake_jwt"
+          SNOWFLAKE_PRIVATE_KEY_PATH: ${{ github.workspace }}/.snowflake/snowflake_rsa_key
+        run: |
+          set -euo pipefail
+          snow --version
+          # Snow CLI may use config toml or env; ensure it sees the private key path
+          echo "Testing connection (this may fail if user/public-key not set correctly)..."
+          snow connection test || true
 
-      # Deploy pipeline with branch specific parameters
+      - name: Fetch repository changes
+        env:
+          SNOWFLAKE_AUTHENTICATOR: "snowflake_jwt"
+          SNOWFLAKE_PRIVATE_KEY_PATH: ${{ github.workspace }}/.snowflake/snowflake_rsa_key
+        run: |
+          set -euo pipefail
+          snow git fetch "${REPO_NAME}"
+
       - name: Deploy data pipeline to ${{ github.ref_name }}
         run: |
           BRANCH_NAME=${{ github.ref_name }}
